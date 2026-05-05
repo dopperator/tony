@@ -1,0 +1,14 @@
+{
+  "name": "mc-claude-bot",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.67.0",
+    "dotenv": "^16.4.7"
+  }
+}

@@ -1,0 +1,19 @@
+name: TonyBcast
+version: 1.1.0
+main: sh.dop.tonybcast.TonyBcast
+api-version: '1.21'
+description: Broadcast formatted Tony messages, plus query helpers for the bot.
+author: dopsh
+commands:
+  tonybcast:
+    description: Broadcast a colored Tony message to all players.
+    usage: /tonybcast <color> <addressee> <message...>
+    permission: tonybcast.use
+  tonyquery:
+    description: Query helpers used by the Tony bot (e.g. nearby entities).
+    usage: /tonyquery nearby <player> [radius]
+    permission: tonybcast.use
+permissions:
+  tonybcast.use:
+    description: Allows broadcasting Tony messages and running tony queries.
+    default: op
