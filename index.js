@@ -32,6 +32,20 @@ function recordChat(type, author, text) {
   while (chatTail.length > MAX_CHAT_TAIL) chatTail.shift();
 }
 
+function formatApiError(err) {
+  const status = err?.status ?? '?';
+  const type = err?.error?.error?.type || err?.error?.type;
+  const short = {
+    overloaded_error: 'overloaded',
+    rate_limit_error: 'rate-limited',
+    authentication_error: 'auth-failed',
+    invalid_request_error: 'bad-request',
+    api_error: 'api-error',
+    timeout_error: 'timeout',
+  }[type] || type || (err?.message ? String(err.message).slice(0, 30) : 'unknown');
+  return `[${status} ${short}]`;
+}
+
 function formatChatTail() {
   if (!chatTail.length) return '';
   const now = Date.now();
@@ -215,8 +229,13 @@ const pendingQueries = [];
 function log(...args) { console.log(new Date().toISOString(), ...args); }
 
 function sendCmd(cmd) {
+  // Wrap screen in prlimit --nofile=4096. The bot's nofile soft limit is the
+  // kernel maximum (~1 billion) on modern systems, and screen does a "close
+  // all inherited FDs" loop on startup that takes ~9 seconds when the limit
+  // is that high. prlimit caps the child's FD ceiling so the close-loop is
+  // instant.
   return new Promise((resolve) => {
-    const p = spawn('screen', ['-S', 'minecraft', '-p', '0', '-X', 'stuff', cmd + '\r']);
+    const p = spawn('prlimit', ['--nofile=4096', '--', 'screen', '-S', 'minecraft', '-p', '0', '-X', 'stuff', cmd + '\r']);
     p.on('error', (e) => { log('screen error:', e.message); resolve(); });
     p.on('exit', (code) => {
       if (code !== 0) log(`screen exited non-zero (${code}) for: ${cmd.slice(0, 80)}`);
@@ -602,7 +621,7 @@ ${cleaned}
     response = await callClaude(messages);
   } catch (err) {
     log('API error:', err.status || '', err.message || err);
-    await sayPublic(caller, "i don't feel like talking to you right now.", 'gray');
+    await sayPublic(caller, `i don't feel like talking to you right now. ${formatApiError(err)}`, 'gray');
     return;
   }
 
@@ -633,7 +652,7 @@ ${cleaned}
       response = await callClaude(messages);
     } catch (err) {
       log('API error (2nd turn):', err.status || '', err.message || err);
-      await sayPublic(caller, "i looked but now i don't feel like telling you.", 'gray');
+      await sayPublic(caller, `i looked but now i don't feel like telling you. ${formatApiError(err)}`, 'gray');
       return;
     }
     usage = response.usage || {};
@@ -654,7 +673,7 @@ ${cleaned}
       response = await callClaude(messages);
     } catch (err) {
       log('API error (search followup):', err.status || '', err.message || err);
-      await sayPublic(caller, "did the research, forgot what i was gonna say.", 'gray');
+      await sayPublic(caller, `did the research, forgot what i was gonna say. ${formatApiError(err)}`, 'gray');
       return;
     }
     const u2 = response.usage || {};
