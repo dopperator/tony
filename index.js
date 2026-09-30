@@ -211,15 +211,18 @@ function formatGlobalContext() {
 // Bedrock/Floodgate chat lines come through Paper with a "[Not Secure] "
 // prefix (unsigned messages). Match with or without it so both Java and
 // Bedrock players reach the bot.
+// Minecraft 26.3+ logs joins/leaves and console-command output as
+// "[Server thread/INFO]: System chat: <text>"; 26.1 had no prefix. Every
+// server-thread pattern below accepts both, or Tony's online roster stays empty.
 const CHAT_RE = /\[Async Chat Thread[^\]]*\/INFO\]:\s*(?:\[Not Secure\]\s*)?<([^>]+)>\s*(.+)$/;
-const JOIN_RE = /\/INFO\]:\s+(\.?\w{2,16}) joined the game\s*$/;
-const LEAVE_RE = /\/INFO\]:\s+(\.?\w{2,16}) left the game\s*$/;
-const LIST_RE = /\/INFO\]:\s+There are \d+ of a max of \d+ players online:\s*(.*)$/;
-const DATA_RE = /\[Server thread\/INFO\]:\s+(\.?\w{2,16}) has the following entity data:\s*(.+)$/;
+const JOIN_RE = /\/INFO\]:\s+(?:System chat:\s+)?(\.?\w{2,16}) joined the game\s*$/;
+const LEAVE_RE = /\/INFO\]:\s+(?:System chat:\s+)?(\.?\w{2,16}) left the game\s*$/;
+const LIST_RE = /\/INFO\]:\s+(?:System chat:\s+)?There are \d+ of a max of \d+ players online:\s*(.*)$/;
+const DATA_RE = /\[Server thread\/INFO\]:\s+(?:System chat:\s+)?(\.?\w{2,16}) has the following entity data:\s*(.+)$/;
 // TonyBcast plugin's /tonyquery nearby reply: `[TonyQuery] nearby <player>: 5 cow, 3 pig, ...` or `none` or `ERROR ...`
 const NEARBY_RE = /\[TonyBcast\]\s+\[TonyQuery\]\s+nearby\s+(\S+):\s+(.+)$/;
 // matches player death / event announcements; used after all the more-specific patterns above
-const EVENT_RE = /\[Server thread\/INFO\]:\s+(\.?\w{2,16})\s+(.+)$/;
+const EVENT_RE = /\[Server thread\/INFO\]:\s+(?:System chat:\s+)?(\.?\w{2,16})\s+(.+)$/;
 const TRIGGER_RE = /@(server|claude|tony|tone)\b/i;
 const NAME_RE = /^\.?[A-Za-z0-9_]{2,16}$/;
 const OWNER = 'Dopperator';
