@@ -209,12 +209,13 @@ module.exports = [
   },
   {
     name: 'mc_give_any',
-    description: "**OWNER-ONLY** — give Dopperator (or whoever he names) ANY item in Minecraft " + G.GAME_VERSION + ": diamonds, netherite, gear, elytra, totems, spawn eggs, new 26.x items, anything. Server-side hard-locked to the Don. Use the exact item ID without 'minecraft:' (e.g. diamond_block, netherite_sword, totem_of_undying, mace, wind_charge). If you're unsure of an ID, guess the most likely one — a wrong ID is rejected with suggestions, and the Don can correct you. Never use this for non-owners; they get mc_give_common / mc_give_rare.",
+    description: "**OWNER-ONLY** — give Dopperator (or whoever he names) ANY item in Minecraft " + G.GAME_VERSION + ", in ANY amount, with any enchantments or extras: diamonds, netherite, gear, elytra, totems, spawn eggs, new 26.x items, god gear, 7000 magma blocks, anything. Server-side hard-locked to the Don. For the Don, use this for EVERY give, even common blocks, since it has no 64 cap. Bulk orders (more than 9 stacks, e.g. over 576 of a 64-stack item) arrive packed in shulker boxes automatically and the server posts its own note about it, so don't mention shulker boxes in your mc_say. Use the exact item ID without 'minecraft:' (e.g. diamond_block, netherite_sword, totem_of_undying, mace, wind_charge). If you're unsure of an ID, guess the most likely one — a wrong ID or bad component is rejected with the server's error, and the Don can correct you. Never use this for non-owners; they get mc_give_common / mc_give_rare.",
     input_schema: {
       type: 'object',
       properties: {
-        item: { type: 'string', description: 'Exact Minecraft item ID, lowercase, no namespace (e.g. diamond, elytra, sulfur_cube_bucket).' },
-        count: { type: 'integer', minimum: 1, maximum: 64 },
+        item: { type: 'string', description: 'Exact Minecraft item ID, lowercase, no namespace (e.g. diamond, elytra, enchanted_book, potion, sulfur_cube_bucket).' },
+        count: { type: 'integer', minimum: 1, description: 'How many. Any amount the Don asks for (e.g. 7150). "a stack" = 64 for most items, but 16 for ender pearls/snowballs/eggs and 1 for tools/armor/totems.' },
+        components: { type: 'string', description: "Optional extras in " + G.GAME_VERSION + " /give component syntax — what goes INSIDE the [ ] after the item ID, comma-separated. Omit for a plain item. Examples: enchantments={sharpness:5,mending:1,unbreaking:3} | stored_enchantments={mending:1} (enchanted_book) | potion_contents={potion:\"minecraft:strong_strength\"} (potion, splash_potion, lingering_potion, tipped_arrow) | custom_name=\"Excalibur\" | unbreakable={} | fireworks={flight_duration:3} (firework_rocket). Enchantment and potion IDs are listed in the GAME DATA section; levels above max (up to 255) work." },
         target: { type: 'string', description: 'Optional. Exact online player name to give it to. Omit for the Don himself.' },
       },
       required: ['item', 'count'],

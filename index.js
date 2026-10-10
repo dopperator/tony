@@ -1,13 +1,17 @@
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const Anthropic = require('@anthropic-ai/sdk').default;
 const { spawn } = require('child_process');
+const fs = require('fs');
+const net = require('net');
 const G = require('./gamedata');
+const { planGive } = require('./give');
 // prompt.js is the hand-written persona (editable from the admin panel); the appendix is
 // generated from the server's own data (command syntax, gamerule names).
 const SYSTEM_PROMPT = require('./prompt') + '\n\n' + G.promptAppendix;
 const TOOLS = require('./tools');
 
 const LOG_FILE = '/home/minecraft/server/logs/latest.log';
+const SERVER_PROPS = '/home/minecraft/server/server.properties';
 const MODEL = 'claude-haiku-5-5';
 // Haiku 5.5 thinks adaptively by default; effort is the knob (its default is also medium).
 // Anthropic's Haiku 5.5 guide: low skips searches and leaks reasoning into replies more.
@@ -84,7 +88,7 @@ function summarizeTool(block) {
     case 'mc_lightning':    return `[struck lightning on ${i.target}]`;
     case 'mc_give_common':  return `[gave ${i.target || 'them'} ${i.count} ${i.item}]`;
     case 'mc_give_rare':    return `[gave ${i.target || 'them'} ${i.count} ${i.item} (rare!)]`;
-    case 'mc_give_any':     return `[gave ${i.target || 'the Don'} ${i.count} ${i.item} (owner give)]`;
+    case 'mc_give_any':     return `[gave ${i.target || 'the Don'} ${i.count} ${i.item}${i.components ? `[${i.components}]` : ''} (owner give)]`;
     case 'mc_query':        return `[queried ${i.target}'s ${i.aspect}]`.replace('[queried', '[looked up');
     default:                return `[did ${n}]`;
   }
@@ -251,6 +255,45 @@ function sendCmd(cmd) {
       if (code !== 0) log(`screen exited non-zero (${code}) for: ${cmd.slice(0, 80)}`);
       resolve();
     });
+  });
+}
+
+// RCON, for commands whose reply matters or that are too long for screen's stuff
+// buffer (bulk gives). One connection per batch; each command gets one reply packet.
+function rcon(cmds) {
+  const props = fs.readFileSync(SERVER_PROPS, 'utf8');
+  const pw = props.match(/^rcon\.password=(.*)$/m)[1].trim();
+  const port = Number(props.match(/^rcon\.port=(\d+)$/m)[1]);
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, '127.0.0.1');
+    let buf = Buffer.alloc(0), i = -1;
+    const out = [];
+    const send = (id, type, body) => {
+      const b = Buffer.from(body, 'utf8');
+      const p = Buffer.alloc(14 + b.length);
+      p.writeInt32LE(10 + b.length, 0); p.writeInt32LE(id, 4); p.writeInt32LE(type, 8); b.copy(p, 12);
+      sock.write(p);
+    };
+    const timer = setTimeout(() => { sock.destroy(); reject(new Error('rcon timeout')); }, 15000);
+    const next = () => {
+      i++;
+      if (i < cmds.length) return send(i + 1, 2, cmds[i]);
+      clearTimeout(timer); sock.end(); resolve(out);
+    };
+    sock.on('connect', () => send(0, 3, pw));
+    sock.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= 4 && buf.length >= 4 + buf.readInt32LE(0)) {
+        const len = buf.readInt32LE(0);
+        const id = buf.readInt32LE(4);
+        const body = buf.subarray(12, 4 + len - 2).toString('utf8').replace(/\u00A7./g, '');
+        buf = buf.subarray(4 + len);
+        if (id === -1) { clearTimeout(timer); sock.destroy(); return reject(new Error('rcon auth failed')); }
+        if (i >= 0) out.push(body);
+        next();
+      }
+    });
+    sock.on('error', (e) => { clearTimeout(timer); reject(e); });
   });
 }
 
@@ -548,11 +591,34 @@ async function executeTool(name, input, caller, requestNow) {
         log(`REJECTED mc_give_any unknown item: ${item} (closest: ${near})`);
         return sayPublic(caller, `(correction: no item "${item}" in ${G.GAME_VERSION} — nothing was given. closest: ${near})`, 'red');
       }
-      const count = Math.min(64, Math.max(1, parseInt(input.count, 10) || 1));
+      // Components are the inside of /give's [...]: enchantments, custom_name, potion_contents...
+      // The server parses and validates them; its error comes back as the correction.
+      const components = String(input.components || '').replace(/[\x00-\x1F\x7F\u00A7]/g, '').trim()
+        .replace(/^\[/, '').replace(/\]$/, '');
+      if (components.length > 1000) return sayPublic(caller, '(correction: that item spec is too long — nothing was given)', 'red');
+      const count = Math.max(1, parseInt(input.count, 10) || 1);
       const rawTarget = input.target ? sanitizePlayer(input.target) : caller;
       if (!rawTarget) return sayPublic(caller, 'invalid target name.', 'red');
       if (!online.has(rawTarget)) return sayPublic(caller, `${rawTarget} ain't online.`, 'red');
-      await sendCmd(`give ${rawTarget} minecraft:${item} ${count}`);
+      const plan = planGive(rawTarget, item, components, count);
+      if (plan.error) {
+        log(`REJECTED mc_give_any: ${plan.error}`);
+        return sayPublic(caller, `(correction: ${plan.error} — nothing was given)`, 'red');
+      }
+      let replies;
+      try { replies = await rcon(plan.cmds); } catch (e) {
+        log('rcon error:', e.message);
+        return sayPublic(caller, `(correction: couldn't reach the server console — nothing was given)`, 'red');
+      }
+      const given = replies.filter((r) => r.startsWith('Gave ')).length;
+      log(`mc_give_any ${count} ${item}${components ? `[${components}]` : ''} -> ${rawTarget}: ${replies.join(' | ').slice(0, 300)}`);
+      if (given === 0) {
+        return sayPublic(caller, `(correction: the server said no — ${replies[0].slice(0, 160)}. nothing was given)`, 'red');
+      }
+      if (given < plan.cmds.length) {
+        return sayPublic(caller, `(only ${given} of ${plan.boxes} shulker boxes went through: ${replies.find((r) => !r.startsWith('Gave ')).slice(0, 120)})`, 'red');
+      }
+      if (plan.boxes) return sayPublic(caller, `(${count} ${item} packed into ${plan.boxes} shulker box${plan.boxes > 1 ? 'es' : ''})`, 'gray');
       return;
     }
 
@@ -651,7 +717,7 @@ ${cleaned}
 
   let usage = response.usage || {};
   const searches = usage.server_tool_use?.web_search_requests || 0;
-  log(`req ${caller}${isOwner ? '(owner)' : ''} in=${usage.input_tokens} cached_r=${usage.cache_read_input_tokens || 0} cached_w=${usage.cache_creation_input_tokens || 0} out=${usage.output_tokens} searches=${searches} hist=${prior.length}`);
+  log(`req ${caller}${isOwner ? '(owner)' : ''} in=${usage.input_tokens} cached_r=${usage.cache_read_input_tokens || 0} cached_w=${usage.cache_creation_input_tokens || 0} out=${usage.output_tokens} searches=${searches} hist=${prior.length} model=${response.model}`);
   if (await refused(caller, response)) return;
 
   // If Claude called mc_query, execute it, send tool_results back, and let Claude respond properly

@@ -6,7 +6,9 @@
 //   1. cd /home/minecraft/bot && mkdir -p datagen-<ver> && cd datagen-<ver>
 //      java -DbundlerMainClass=net.minecraft.data.Main \
 //        -jar /home/minecraft/orphanage/cache/mojang_<ver>.jar --reports --output generated
-//      then keep only generated/reports/{registries,commands}.json (rm -rf libraries versions logs)
+//      unzip -o -j versions/<ver>/server-<ver>.jar 'data/minecraft/enchantment/*.json' -d generated/enchantment
+//      then keep only generated/reports/{registries,commands}.json, generated/reports/minecraft/components/item/
+//      and generated/enchantment/ (rm -rf libraries versions logs and the other reports)
 //   2. node gamedata/build.js <ver>        (reads datagen-<ver>, writes gamedata/<ver>.json,
 //                                           asks the running server for /help usage over RCON)
 //   3. point GAME_VERSION in gamedata/index.js at <ver>, then: pm2 restart mc-claude-bot
@@ -27,6 +29,19 @@ const ids = (reg) => Object.keys(registries[reg].entries).map((s) => s.replace(/
 const ITEMS = ids('minecraft:item');
 const ENTITIES = new Set(ids('minecraft:entity_type'));
 const EFFECTS = new Set(ids('minecraft:mob_effect'));
+const POTIONS = ids('minecraft:potion');
+
+// Stack sizes (only the ones that aren't 64), so bulk gives fill shulker slots correctly.
+const COMPONENTS = path.join(REPORTS, 'minecraft', 'components', 'item');
+const stackSizes = {};
+for (const item of ITEMS) {
+  const size = require(path.join(COMPONENTS, `${item}.json`)).components['minecraft:max_stack_size'];
+  if (size !== 64) stackSizes[item] = size;
+}
+// Enchantments are data-driven, so they come from the server jar's built-in datapack, not the registries report.
+const ENCHANT_DIR = path.join(ROOT, `datagen-${VERSION}`, 'generated', 'enchantment');
+const enchantments = Object.fromEntries(fs.readdirSync(ENCHANT_DIR).filter((f) => f.endsWith('.json')).sort()
+  .map((f) => [f.slice(0, -5), require(path.join(ENCHANT_DIR, f)).max_level]));
 
 // ---------------------------------------------------------------- policy ---
 // Common handouts: ordinary building/decor blocks and everyday food. Anything
@@ -128,13 +143,14 @@ function rcon(cmds) {
 
   const out = { version: VERSION, generatedAt: new Date().toISOString(), giveCommon: common, giveRare: RARE, allItems: ITEMS,
     summonPassive: PASSIVE, summonOwnerOnly: HOSTILE_OR_RESTRICTED, effectsPositive: POSITIVE, effectsOwnerOnly: RESTRICTED_EFFECTS,
-    commandUsage: usage, gamerules };
+    commandUsage: usage, gamerules, stackSizes, enchantments, potions: POTIONS };
   const file = path.join(__dirname, `${VERSION}.json`);
   const prev = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
   fs.writeFileSync(file, JSON.stringify(out, null, 1));
   console.log(`wrote ${file}: ${common.length} common items, ${RARE.length} rare, ${ITEMS.length} total items, ` +
     `${PASSIVE.length} passive / ${HOSTILE_OR_RESTRICTED.length} owner-only mobs, ${POSITIVE.length} / ${RESTRICTED_EFFECTS.length} effects, ` +
-    `${usage.split('\n').length} usage lines, ${gamerules.length} gamerules`);
+    `${usage.split('\n').length} usage lines, ${gamerules.length} gamerules, ${Object.keys(stackSizes).length} non-64 stack sizes, ` +
+    `${Object.keys(enchantments).length} enchantments, ${POTIONS.length} potions`);
   if (prev) for (const k of ['giveCommon', 'summonPassive', 'summonOwnerOnly', 'effectsPositive']) {
     const a = new Set(prev[k]), b = new Set(out[k]);
     const add = [...b].filter((x) => !a.has(x)), rem = [...a].filter((x) => !b.has(x));
