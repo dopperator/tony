@@ -1,3 +1,7 @@
+// Item/mob/effect enums come from gamedata/ (built from the server's own 26.3 data);
+// index.js validates against the same sets, so the two can't drift apart.
+const G = require('./gamedata');
+
 module.exports = [
   {
     type: 'web_search_20260209',
@@ -69,19 +73,13 @@ module.exports = [
   },
   {
     name: 'mc_effect',
-    description: "Apply a potion effect (positive or negative) to a player. 'target' controls who gets it — omit for self, set to another name for cross-player. NON-OWNERS CAN ONLY TARGET THEMSELVES, and non-owners are limited to positive effects (speed, jump_boost, luck, etc). OWNER can target anyone with any effect including negatives (nausea, blindness, weakness, slowness, poison, etc). Duration up to 600s.",
+    description: "Apply a potion effect to a player. 'target' controls who gets it — omit for self, set to another name for cross-player. NON-OWNERS CAN ONLY TARGET THEMSELVES and only get the helpful effects (" + G.data.effectsPositive.join(', ') + "), at level I for up to 120s. Everything else is OWNER-ONLY: harmful ones (nausea, blindness, poison, wither, levitation, wind_charged, oozing, weaving, infested...) and exploitable ones (invisibility, hero_of_the_village, bad_omen, raid_omen, trial_omen). Duration up to 600s.",
     input_schema: {
       type: 'object',
       properties: {
         effect: {
           type: 'string',
-          enum: [
-            'speed', 'slow_falling', 'jump_boost', 'night_vision',
-            'regeneration', 'fire_resistance', 'water_breathing',
-            'luck', 'haste', 'strength', 'resistance',
-            'nausea', 'blindness', 'weakness', 'slowness', 'poison', 'wither',
-            'hunger', 'mining_fatigue', 'levitation', 'darkness', 'glowing', 'bad_omen',
-          ],
+          enum: [...G.data.effectsPositive, ...G.data.effectsOwnerOnly],
         },
         duration: { type: 'integer', minimum: 1, maximum: 600, description: 'Duration in seconds (1-600)' },
         amplifier: { type: 'integer', minimum: 0, maximum: 255, description: 'Amplifier = level - 1. So "Nausea 10" = amplifier 9, "Speed 6" = amplifier 5. Range 0-255. Non-owners are force-capped to 0 (level 1) regardless of what you pass.' },
@@ -93,13 +91,13 @@ module.exports = [
   },
   {
     name: 'mc_summon',
-    description: "Summon a passive mob at a player's location. If caller says 'spawn sheep for me' / 'gimme a cow', leave 'target' empty and it spawns at them. If caller says 'send sheep to alex' / 'spawn chickens on luna', set 'target' to that player's name. HOSTILE MOBS ARE FORBIDDEN — enum is passive only. For multiple mobs (e.g., 'give her 2 sheep'), call mc_summon twice, BOTH with the same target.",
+    description: "Summon a passive mob at a player's location. If caller says 'spawn sheep for me' / 'gimme a cow', leave 'target' empty and it spawns at them. If caller says 'send sheep to alex' / 'spawn chickens on luna', set 'target' to that player's name. HOSTILE MOBS ARE FORBIDDEN — enum is passive only (includes 26.x mobs like sulfur_cube, copper_golem, happy_ghast, nautilus, camel_husk). For multiple mobs (e.g., 'give her 2 sheep'), call mc_summon twice, BOTH with the same target.",
     input_schema: {
       type: 'object',
       properties: {
         mob: {
           type: 'string',
-          enum: ['cow', 'pig', 'chicken', 'sheep', 'rabbit', 'cat', 'parrot', 'horse', 'fox', 'axolotl', 'frog'],
+          enum: G.data.summonPassive,
         },
         target: { type: 'string', description: "Optional. Exact online player name where the mob should spawn. Omit to spawn on the caller." },
       },
@@ -109,20 +107,13 @@ module.exports = [
   },
   {
     name: 'mc_summon_hostile',
-    description: "Summon a HOSTILE mob at a player's location. **OWNER-ONLY** — only Dopperator may invoke this. Server-side hard-locked to the Don regardless of who you call it for. Use this when the Don wants to grief, fight, or test combat. For multiple mobs, call multiple times with same target. Targets default to caller (Don) if omitted.",
+    description: "Summon a HOSTILE or RESTRICTED mob at a player's location (restricted = valuable or dangerous non-hostile mobs: villager, wandering_trader, iron_golem, bee, polar_bear, pufferfish, trader_llama). **OWNER-ONLY** — only Dopperator may invoke this. Server-side hard-locked to the Don regardless of who you call it for. Use this when the Don wants to grief, fight, or test combat. For multiple mobs, call multiple times with same target. Targets default to caller (Don) if omitted.",
     input_schema: {
       type: 'object',
       properties: {
         mob: {
           type: 'string',
-          enum: [
-            'zombie', 'skeleton', 'creeper', 'spider', 'cave_spider', 'enderman',
-            'witch', 'pillager', 'vindicator', 'evoker', 'ravager',
-            'husk', 'drowned', 'stray', 'wither_skeleton', 'phantom',
-            'blaze', 'ghast', 'magma_cube', 'slime', 'silverfish', 'endermite',
-            'hoglin', 'zoglin', 'piglin_brute', 'guardian', 'shulker',
-            'breeze', 'bogged', 'creaking', 'vex', 'warden',
-          ],
+          enum: G.data.summonOwnerOnly,
         },
         target: { type: 'string', description: "Optional. Exact online player name where the mob should spawn. Omit to spawn on the caller (Don)." },
       },
@@ -132,36 +123,13 @@ module.exports = [
   },
   {
     name: 'mc_give_common',
-    description: "Give common building materials or basic food. Up to 64 per call — one stack. Use freely if the player has ANY half-decent reason. Categories: building blocks (dirt, stone, wood, glass, sand, bricks, quartz), basic food (beef, chicken, bread, apple, carrot, potato, etc — both raw and cooked variants). For rare food like golden apples use mc_give_rare instead. If caller says 'give me X' leave target empty; if 'give PLAYER X' set target to that player.",
+    description: "Give common, non-valuable items: building blocks in every wood/stone/color variant (planks, logs, slabs, stairs, walls, fences, doors, wool, carpet, concrete, terracotta, glass, bricks...), decor and plants (flowers, saplings, leaves, lanterns, beds, banners, dyes, candles), everyday utility blocks (crafting table, furnace, chest, barrel, ladder, scaffolding...) and basic food, raw or cooked. Up to 64 per call. Use freely if the player has ANY half-decent reason. Ores, ingots, gems, gear, potions and spawn eggs are NOT here. For golden apples, pearls and xp use mc_give_rare. If caller says 'give me X' leave target empty; if 'give PLAYER X' set target to that player.",
     input_schema: {
       type: 'object',
       properties: {
         item: {
           type: 'string',
-          enum: [
-            'dirt', 'coarse_dirt', 'grass_block', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate',
-            'oak_planks', 'spruce_planks', 'birch_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'bamboo_planks',
-            'oak_log', 'spruce_log', 'birch_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log',
-            'glass', 'sand', 'gravel', 'red_sand', 'sandstone',
-            'bricks', 'stone_bricks', 'smooth_stone', 'terracotta',
-            'quartz', 'quartz_block', 'smooth_quartz_block', 'quartz_bricks', 'quartz_pillar', 'chiseled_quartz_block',
-            'nether_bricks', 'red_nether_bricks', 'blackstone', 'polished_blackstone',
-            'calcite', 'tuff', 'dripstone_block', 'pointed_dripstone', 'amethyst_block', 'amethyst_shard', 'budding_amethyst',
-            'basalt', 'smooth_basalt', 'polished_basalt', 'obsidian', 'end_stone', 'end_stone_bricks',
-            'glowstone', 'sea_lantern', 'lantern', 'soul_lantern', 'soul_torch',
-            'purpur_block', 'purpur_pillar', 'prismarine', 'prismarine_bricks', 'dark_prismarine',
-            'mossy_cobblestone', 'mossy_stone_bricks', 'cracked_stone_bricks',
-            'cobblestone_wall', 'stone_brick_wall',
-            'mud', 'packed_mud', 'mud_bricks',
-            'andesite', 'diorite', 'granite', 'polished_andesite', 'polished_diorite', 'polished_granite',
-            'torch', 'crafting_table', 'furnace', 'chest', 'ladder',
-            'white_wool', 'gray_wool', 'black_wool', 'red_wool', 'blue_wool', 'green_wool', 'yellow_wool',
-            'white_concrete', 'gray_concrete', 'black_concrete', 'red_concrete', 'blue_concrete', 'green_concrete', 'yellow_concrete',
-            'beef', 'cooked_beef', 'chicken', 'cooked_chicken', 'porkchop', 'cooked_porkchop',
-            'mutton', 'cooked_mutton', 'rabbit', 'cooked_rabbit', 'cod', 'cooked_cod', 'salmon', 'cooked_salmon',
-            'bread', 'apple', 'carrot', 'potato', 'baked_potato', 'beetroot',
-            'pumpkin_pie', 'cake', 'melon_slice', 'sweet_berries', 'dried_kelp',
-          ],
+          enum: G.data.giveCommon,
         },
         count: { type: 'integer', minimum: 1, maximum: 64 },
         target: { type: 'string', description: "Optional. Exact online player name to give it to. Omit for the caller themselves." },
@@ -234,6 +202,20 @@ module.exports = [
         },
         count: { type: 'integer', minimum: 1, maximum: 4 },
         target: { type: 'string', description: "Optional. Exact online player name to give it to. Omit for the caller themselves." },
+      },
+      required: ['item', 'count'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'mc_give_any',
+    description: "**OWNER-ONLY** — give Dopperator (or whoever he names) ANY item in Minecraft " + G.GAME_VERSION + ": diamonds, netherite, gear, elytra, totems, spawn eggs, new 26.x items, anything. Server-side hard-locked to the Don. Use the exact item ID without 'minecraft:' (e.g. diamond_block, netherite_sword, totem_of_undying, mace, wind_charge). If you're unsure of an ID, guess the most likely one — a wrong ID is rejected with suggestions, and the Don can correct you. Never use this for non-owners; they get mc_give_common / mc_give_rare.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        item: { type: 'string', description: 'Exact Minecraft item ID, lowercase, no namespace (e.g. diamond, elytra, sulfur_cube_bucket).' },
+        count: { type: 'integer', minimum: 1, maximum: 64 },
+        target: { type: 'string', description: 'Optional. Exact online player name to give it to. Omit for the Don himself.' },
       },
       required: ['item', 'count'],
       additionalProperties: false,

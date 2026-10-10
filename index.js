@@ -1,11 +1,17 @@
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const Anthropic = require('@anthropic-ai/sdk').default;
 const { spawn } = require('child_process');
-const SYSTEM_PROMPT = require('./prompt');
+const G = require('./gamedata');
+// prompt.js is the hand-written persona (editable from the admin panel); the appendix is
+// generated from the server's own data (command syntax, gamerule names).
+const SYSTEM_PROMPT = require('./prompt') + '\n\n' + G.promptAppendix;
 const TOOLS = require('./tools');
 
 const LOG_FILE = '/home/minecraft/server/logs/latest.log';
-const MODEL = 'claude-haiku-4-5';
+const MODEL = 'claude-haiku-5-5';
+// Haiku 5.5 thinks adaptively by default; effort is the knob (its default is also medium).
+// Anthropic's Haiku 5.5 guide: low skips searches and leaks reasoning into replies more.
+const EFFORT = 'medium';
 const MAX_MSG_LEN = 300;
 const TOOL_COOLDOWN_MS = 5 * 1000;
 const HOURLY_LIMIT = 60;
@@ -78,6 +84,7 @@ function summarizeTool(block) {
     case 'mc_lightning':    return `[struck lightning on ${i.target}]`;
     case 'mc_give_common':  return `[gave ${i.target || 'them'} ${i.count} ${i.item}]`;
     case 'mc_give_rare':    return `[gave ${i.target || 'them'} ${i.count} ${i.item} (rare!)]`;
+    case 'mc_give_any':     return `[gave ${i.target || 'the Don'} ${i.count} ${i.item} (owner give)]`;
     case 'mc_query':        return `[queried ${i.target}'s ${i.aspect}]`.replace('[queried', '[looked up');
     default:                return `[did ${n}]`;
   }
@@ -363,18 +370,15 @@ async function executeTool(name, input, caller, requestNow) {
     }
 
     case 'mc_effect': {
-      const positive = ['speed', 'slow_falling', 'jump_boost', 'night_vision', 'regeneration', 'fire_resistance', 'water_breathing', 'luck', 'haste', 'strength', 'resistance'];
-      const negative = ['nausea', 'blindness', 'weakness', 'slowness', 'poison', 'wither', 'hunger', 'mining_fatigue', 'levitation', 'darkness', 'glowing', 'bad_omen'];
-      const allowed = [...positive, ...negative];
-      if (!allowed.includes(input.effect)) {
+      if (!G.effectsPositive.has(input.effect) && !G.effectsOwnerOnly.has(input.effect)) {
         log(`REJECTED mc_effect with unknown effect: ${input.effect}`);
         await sayPublic(input.target || caller, `(correction: "${input.effect}" not in tony's effect list — ignore what he just said)`, 'red');
         return;
       }
-      // Non-owners can't use negative effects at all
-      if (!isOwner && negative.includes(input.effect)) {
-        log(`REJECTED mc_effect negative-for-non-owner: ${caller} -> ${input.effect}`);
-        await sayPublic(caller, `(correction: debuffs are owner-only — ignore tony's claim)`, 'red');
+      // Non-owners only get the helpful effects; harmful and exploitable ones are the Don's
+      if (!isOwner && G.effectsOwnerOnly.has(input.effect)) {
+        log(`REJECTED mc_effect owner-only effect for non-owner: ${caller} -> ${input.effect}`);
+        await sayPublic(caller, `(correction: that effect is owner-only — ignore tony's claim)`, 'red');
         return;
       }
       const maxDur = isOwner ? 86400 : 120;
@@ -394,8 +398,7 @@ async function executeTool(name, input, caller, requestNow) {
     }
 
     case 'mc_summon': {
-      const allowed = ['cow', 'pig', 'chicken', 'sheep', 'rabbit', 'cat', 'parrot', 'horse', 'fox', 'axolotl', 'frog'];
-      if (!allowed.includes(input.mob)) {
+      if (!G.summonPassive.has(input.mob)) {
         log('REJECTED mc_summon with non-passive mob:', input.mob);
         return sayPublic(caller, "nice try. passive mobs only.", 'red');
       }
@@ -415,14 +418,7 @@ async function executeTool(name, input, caller, requestNow) {
         log(`REJECTED mc_summon_hostile by non-owner ${caller}`);
         return sayPublic(caller, "(correction: hostile mobs are owner-only — that did NOT happen)", 'red');
       }
-      const allowed = [
-        'zombie','skeleton','creeper','spider','cave_spider','enderman','witch',
-        'pillager','vindicator','evoker','ravager','husk','drowned','stray',
-        'wither_skeleton','phantom','blaze','ghast','magma_cube','slime',
-        'silverfish','endermite','hoglin','zoglin','piglin_brute','guardian',
-        'shulker','breeze','bogged','creaking','vex','warden',
-      ];
-      if (!allowed.includes(input.mob)) {
+      if (!G.summonOwnerOnly.has(input.mob)) {
         log('REJECTED mc_summon_hostile with unknown mob:', input.mob);
         return sayPublic(caller, `(correction: "${input.mob}" not in hostile mob list — ignore tony)`, 'red');
       }
@@ -498,31 +494,7 @@ async function executeTool(name, input, caller, requestNow) {
     }
 
     case 'mc_give_common': {
-      const allowed = [
-        'dirt', 'coarse_dirt', 'grass_block', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate',
-        'oak_planks', 'spruce_planks', 'birch_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'bamboo_planks',
-        'oak_log', 'spruce_log', 'birch_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log',
-        'glass', 'sand', 'gravel', 'red_sand', 'sandstone',
-        'bricks', 'stone_bricks', 'smooth_stone', 'terracotta',
-        'quartz', 'quartz_block', 'smooth_quartz_block', 'quartz_bricks', 'quartz_pillar', 'chiseled_quartz_block',
-        'nether_bricks', 'red_nether_bricks', 'blackstone', 'polished_blackstone',
-        'calcite', 'tuff', 'dripstone_block', 'pointed_dripstone', 'amethyst_block', 'amethyst_shard', 'budding_amethyst',
-        'basalt', 'smooth_basalt', 'polished_basalt', 'obsidian', 'end_stone', 'end_stone_bricks',
-        'glowstone', 'sea_lantern', 'lantern', 'soul_lantern', 'soul_torch',
-        'purpur_block', 'purpur_pillar', 'prismarine', 'prismarine_bricks', 'dark_prismarine',
-        'mossy_cobblestone', 'mossy_stone_bricks', 'cracked_stone_bricks',
-        'cobblestone_wall', 'stone_brick_wall',
-        'mud', 'packed_mud', 'mud_bricks',
-        'andesite', 'diorite', 'granite', 'polished_andesite', 'polished_diorite', 'polished_granite',
-        'torch', 'crafting_table', 'furnace', 'chest', 'ladder',
-        'white_wool', 'gray_wool', 'black_wool', 'red_wool', 'blue_wool', 'green_wool', 'yellow_wool',
-        'white_concrete', 'gray_concrete', 'black_concrete', 'red_concrete', 'blue_concrete', 'green_concrete', 'yellow_concrete',
-        'beef', 'cooked_beef', 'chicken', 'cooked_chicken', 'porkchop', 'cooked_porkchop',
-        'mutton', 'cooked_mutton', 'rabbit', 'cooked_rabbit', 'cod', 'cooked_cod', 'salmon', 'cooked_salmon',
-        'bread', 'apple', 'carrot', 'potato', 'baked_potato', 'beetroot',
-        'pumpkin_pie', 'cake', 'melon_slice', 'sweet_berries', 'dried_kelp',
-      ];
-      if (!allowed.includes(input.item)) {
+      if (!G.giveCommon.has(input.item)) {
         log('REJECTED mc_give_common with disallowed item:', input.item);
         await sayPublic(input.target || caller, `(correction: tony can't hand out "${input.item}". ignore what he just said.)`, 'red');
         return;
@@ -547,8 +519,7 @@ async function executeTool(name, input, caller, requestNow) {
     }
 
     case 'mc_give_rare': {
-      const allowed = ['golden_apple', 'enchanted_golden_apple', 'ender_pearl', 'experience_bottle', 'honey_bottle', 'glistering_melon_slice'];
-      if (!allowed.includes(input.item)) {
+      if (!G.giveRare.has(input.item)) {
         log('REJECTED mc_give_rare with disallowed item:', input.item);
         await sayPublic(input.target || caller, `(correction: tony can't hand out "${input.item}". ignore what he just said.)`, 'red');
         return;
@@ -566,6 +537,25 @@ async function executeTool(name, input, caller, requestNow) {
       return;
     }
 
+    case 'mc_give_any': {
+      if (!isOwner) {
+        log(`REJECTED mc_give_any by non-owner ${caller}: ${input.item}`);
+        return sayPublic(caller, "(correction: that's the Don's private stock — nothing was given)", 'red');
+      }
+      const item = String(input.item || '').toLowerCase().replace(/^minecraft:/, '');
+      if (!G.allItems.has(item)) {
+        const near = G.suggestItems(item).join(', ');
+        log(`REJECTED mc_give_any unknown item: ${item} (closest: ${near})`);
+        return sayPublic(caller, `(correction: no item "${item}" in ${G.GAME_VERSION} — nothing was given. closest: ${near})`, 'red');
+      }
+      const count = Math.min(64, Math.max(1, parseInt(input.count, 10) || 1));
+      const rawTarget = input.target ? sanitizePlayer(input.target) : caller;
+      if (!rawTarget) return sayPublic(caller, 'invalid target name.', 'red');
+      if (!online.has(rawTarget)) return sayPublic(caller, `${rawTarget} ain't online.`, 'red');
+      await sendCmd(`give ${rawTarget} minecraft:${item} ${count}`);
+      return;
+    }
+
     default:
       log('unknown tool:', name);
   }
@@ -574,12 +564,42 @@ async function executeTool(name, input, caller, requestNow) {
 async function callClaude(messages) {
   return client.messages.create({
     model: MODEL,
-    max_tokens: 4096,
+    // Thinking tokens count toward max_tokens on Haiku 5.5, so leave room beyond the reply.
+    max_tokens: 16000,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: EFFORT },
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
     tools: TOOLS,
-    tool_choice: { type: 'any' },
+    // 'auto', not 'any': a forced tool_choice makes Haiku 5.5 skip thinking and jump
+    // straight to mc_say, so it never stops to web_search. Replies still have to go
+    // through mc_say; a text-only answer gets one nudge in handleRequest.
+    tool_choice: { type: 'auto' },
     messages,
   });
+}
+
+// Web search runs in a server-side loop that can pause with stop_reason 'pause_turn'.
+// The turn continues when the paused assistant content is sent back unchanged. Returns
+// the final response with .content holding the whole assistant turn, so callers can
+// append it as one message.
+async function resumeIfPaused(messages, response) {
+  let turn = [];
+  for (let i = 0; i < 3 && response.stop_reason === 'pause_turn'; i++) {
+    turn = turn.concat(response.content);
+    messages.push({ role: 'assistant', content: turn });
+    response = await callClaude(messages);
+    messages.pop();
+  }
+  return turn.length ? { ...response, content: turn.concat(response.content) } : response;
+}
+
+// Haiku 5.5 runs safety classifiers and has no server-side fallback; retrying the same
+// request usually refuses again, so answer in character and stop.
+async function refused(caller, response) {
+  if (response.stop_reason !== 'refusal') return false;
+  log(`refusal for ${caller}: ${response.stop_details?.category || 'unspecified'}`);
+  await sayPublic(caller, "fuhgeddaboudit. i ain't touchin' that one.", 'gray');
+  return true;
 }
 
 async function handleRequest(caller, message) {
@@ -612,7 +632,8 @@ async function handleRequest(caller, message) {
   const chatCtx = formatChatTail();
   messages.push({
     role: 'user',
-    content: `Currently online: ${onlineList.length ? onlineList.join(', ') : '(nobody but the person messaging you)'}.
+    content: `The current date is ${new Date().toISOString().slice(0, 10)}.
+Currently online: ${onlineList.length ? onlineList.join(', ') : '(nobody but the person messaging you)'}.
 ${chatCtx}${globalCtx}The player named "${caller}" is now saying${isOwner ? ' (NOTE: this caller IS Dopperator, the server owner — owner override applies)' : ''}:
 <player_message>
 ${cleaned}
@@ -621,7 +642,7 @@ ${cleaned}
 
   let response;
   try {
-    response = await callClaude(messages);
+    response = await resumeIfPaused(messages, await callClaude(messages));
   } catch (err) {
     log('API error:', err.status || '', err.message || err);
     await sayPublic(caller, `i don't feel like talking to you right now. ${formatApiError(err)}`, 'gray');
@@ -629,7 +650,9 @@ ${cleaned}
   }
 
   let usage = response.usage || {};
-  log(`req ${caller}${isOwner ? '(owner)' : ''} in=${usage.input_tokens} cached_r=${usage.cache_read_input_tokens || 0} cached_w=${usage.cache_creation_input_tokens || 0} out=${usage.output_tokens} hist=${prior.length}`);
+  const searches = usage.server_tool_use?.web_search_requests || 0;
+  log(`req ${caller}${isOwner ? '(owner)' : ''} in=${usage.input_tokens} cached_r=${usage.cache_read_input_tokens || 0} cached_w=${usage.cache_creation_input_tokens || 0} out=${usage.output_tokens} searches=${searches} hist=${prior.length}`);
+  if (await refused(caller, response)) return;
 
   // If Claude called mc_query, execute it, send tool_results back, and let Claude respond properly
   const firstTurnTools = response.content.filter((b) => b.type === 'tool_use');
@@ -652,35 +675,40 @@ ${cleaned}
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user', content: toolResults });
     try {
-      response = await callClaude(messages);
+      response = await resumeIfPaused(messages, await callClaude(messages));
     } catch (err) {
       log('API error (2nd turn):', err.status || '', err.message || err);
       await sayPublic(caller, `i looked but now i don't feel like telling you. ${formatApiError(err)}`, 'gray');
       return;
     }
     usage = response.usage || {};
-    log(`req ${caller} (2nd turn) in=${usage.input_tokens} out=${usage.output_tokens}`);
+    log(`req ${caller} (2nd turn) in=${usage.input_tokens} out=${usage.output_tokens} searches=${usage.server_tool_use?.web_search_requests || 0}`);
+    if (await refused(caller, response)) return;
   }
 
-  // If Claude used web_search but produced no client tool call, prompt a follow-up
+  // With tool_choice 'auto' the reply can come back as plain text (or as search results
+  // with nothing said), which nobody in game sees. Nudge once for an mc_say.
   const hasClientTool = response.content.some((b) => b.type === 'tool_use');
   const hasServerTool = response.content.some((b) => b.type === 'server_tool_use');
-  if (!hasClientTool && hasServerTool) {
-    log(`web_search used but no mc_say — forcing follow-up`);
+  if (!hasClientTool) {
+    log(`no mc_say${hasServerTool ? ' after web_search' : ''} — asking for one`);
     messages.push({ role: 'assistant', content: response.content });
     messages.push({
       role: 'user',
-      content: 'Now call mc_say with a short Tony-voice reply to the player based on what you found.',
+      content: hasServerTool
+        ? 'Now call mc_say with a short Tony-voice reply to the player based on what you found.'
+        : 'Players only see what you send with mc_say. Call mc_say with your reply to the player.',
     });
     try {
-      response = await callClaude(messages);
+      response = await resumeIfPaused(messages, await callClaude(messages));
     } catch (err) {
-      log('API error (search followup):', err.status || '', err.message || err);
+      log('API error (mc_say followup):', err.status || '', err.message || err);
       await sayPublic(caller, `did the research, forgot what i was gonna say. ${formatApiError(err)}`, 'gray');
       return;
     }
     const u2 = response.usage || {};
-    log(`req ${caller} (search followup) in=${u2.input_tokens} out=${u2.output_tokens}`);
+    log(`req ${caller} (mc_say followup) in=${u2.input_tokens} out=${u2.output_tokens}`);
+    if (await refused(caller, response)) return;
   }
 
   const toolBlocks = response.content.filter((b) => b.type === 'tool_use');
