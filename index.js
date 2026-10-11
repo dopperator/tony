@@ -5,13 +5,28 @@ const fs = require('fs');
 const net = require('net');
 const G = require('./gamedata');
 const { planGive } = require('./give');
+
+// One Tony process per server; PM2 sets TONY_SERVER (mc-claude-bot-orphanage = orphanage,
+// mc-claude-bot-jbb = jbb). screen is the server's console session.
+const SERVERS = {
+  orphanage: { dir: '/home/minecraft/orphanage', screen: 'orphanage', address: 'orphanage.dop.sh' },
+  jbb: { dir: '/home/minecraft/server', screen: 'minecraft', address: 'jbb.dop.sh' },
+};
+const SERVER_NAME = process.env.TONY_SERVER || 'orphanage';
+const SERVER = SERVERS[SERVER_NAME];
+if (!SERVER) {
+  console.error(`unknown TONY_SERVER "${SERVER_NAME}" — expected one of ${Object.keys(SERVERS).join(', ')}`);
+  process.exit(1);
+}
+const LOG_FILE = `${SERVER.dir}/logs/latest.log`;
+const SERVER_PROPS = `${SERVER.dir}/server.properties`;
+const SCREEN_NAME = SERVER.screen;
+
 // prompt.js is the hand-written persona (editable from the admin panel); the appendix is
 // generated from the server's own data (command syntax, gamerule names).
-const SYSTEM_PROMPT = require('./prompt') + '\n\n' + G.promptAppendix;
+const SYSTEM_PROMPT = require('./prompt').replaceAll('{{SERVER_ADDRESS}}', SERVER.address) + '\n\n' + G.promptAppendix;
 const TOOLS = require('./tools');
 
-const LOG_FILE = '/home/minecraft/server/logs/latest.log';
-const SERVER_PROPS = '/home/minecraft/server/server.properties';
 const MODEL = 'claude-haiku-5-5';
 // Haiku 5.5 thinks adaptively by default; effort is the knob (its default is also medium).
 // Anthropic's Haiku 5.5 guide: low skips searches and leaks reasoning into replies more.
@@ -249,7 +264,7 @@ function sendCmd(cmd) {
   // is that high. prlimit caps the child's FD ceiling so the close-loop is
   // instant.
   return new Promise((resolve) => {
-    const p = spawn('prlimit', ['--nofile=4096', '--', 'screen', '-S', 'minecraft', '-p', '0', '-X', 'stuff', cmd + '\r']);
+    const p = spawn('prlimit', ['--nofile=4096', '--', 'screen', '-S', SCREEN_NAME, '-p', '0', '-X', 'stuff', cmd + '\r']);
     p.on('error', (e) => { log('screen error:', e.message); resolve(); });
     p.on('exit', (code) => {
       if (code !== 0) log(`screen exited non-zero (${code}) for: ${cmd.slice(0, 80)}`);
@@ -900,7 +915,7 @@ function spawnTail() {
   });
 }
 
-log('mc-claude-bot starting. model:', MODEL);
+log(`mc-claude-bot starting on ${SERVER_NAME} (${SERVER.address}). model:`, MODEL);
 spawnTail();
 
 // Seed online roster from server, then refresh every 2 minutes

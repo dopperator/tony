@@ -11,7 +11,7 @@
 //      and generated/enchantment/ (rm -rf libraries versions logs and the other reports)
 //   2. node gamedata/build.js <ver>        (reads datagen-<ver>, writes gamedata/<ver>.json,
 //                                           asks the running server for /help usage over RCON)
-//   3. point GAME_VERSION in gamedata/index.js at <ver>, then: pm2 restart mc-claude-bot
+//   3. point GAME_VERSION in gamedata/index.js at <ver>, then: pm2 restart mc-claude-bot-orphanage mc-claude-bot-jbb
 // Review the printed diff of lists before restarting. Then check the live server accepts every ID
 // (experimental items can be in the registry but disabled): `give @a[name=__nobody__] minecraft:<id> 1`
 // must answer "No player was found", not "Unknown item".
