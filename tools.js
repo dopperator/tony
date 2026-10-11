@@ -178,6 +178,18 @@ module.exports = [
     },
   },
   {
+    name: 'mc_command',
+    description: "OWNER-ONLY (only offered when the Don is asking). Run ANY server command for him when none of your other tools covers it: finding a named pet or mob, reading entity or block data, gamerules, scoreboards, kill/clear/fill/setblock, effects on mobs, summoning anything, and so on. Write it as you'd type it in the server console, without the leading slash. It runs as the console in the overworld at 0,0, so @s, @p and ~ only work inside `execute as <player> at @s run ...`. You get the server's reply back: if it's an error, fix the command (web_search the minecraft.wiki if unsure of 26.3 syntax) and run it again.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The full command without the leading slash, e.g. execute as @e[type=wolf,name=Forrest] run data get entity @s Pos' },
+      },
+      required: ['command'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'mc_query',
     description: "Look up in-game info about an online player: their current location (dimension + coordinates), held item (with enchantments and durability), inventory summary, last death location, spawnpoint (bed/anchor respawn), or nearby_entities (counts of non-player mobs within 32 blocks of them — useful when a player asks 'what mob is this' or you want to verify what they're actually looking at). 'last_death', 'spawn', and 'nearby_entities' are not sensitive — grant freely. 'location'/'held_item'/'inventory' are SURVEILLANCE — require persuasion, default refuse. After you get the data, respond with mc_say to report it in Tony's voice.",
     input_schema: {

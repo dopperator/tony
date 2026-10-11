@@ -25,7 +25,14 @@ const SCREEN_NAME = SERVER.screen;
 // prompt.js is the hand-written persona (editable from the admin panel); the appendix is
 // generated from the server's own data (command syntax, gamerule names).
 const SYSTEM_PROMPT = require('./prompt').replaceAll('{{SERVER_ADDRESS}}', SERVER.address) + '\n\n' + G.promptAppendix;
-const TOOLS = require('./tools');
+const ALL_TOOLS = require('./tools');
+// mc_command is only sent on the Don's requests, so nobody else's conversation can reach it.
+const OWNER_ONLY_TOOLS = new Set(['mc_command']);
+const TOOLS = ALL_TOOLS.filter((t) => !OWNER_ONLY_TOOLS.has(t.name));
+// The Don's requests also get an unrestricted web search: any site, up to 5 searches.
+const OWNER_TOOLS = ALL_TOOLS.map((t) => (t.name === 'web_search'
+  ? { type: t.type, name: t.name, max_uses: 5, allowed_callers: t.allowed_callers }
+  : t));
 
 const MODEL = 'claude-haiku-5-5';
 // Haiku 5.5 thinks adaptively by default; effort is the knob (its default is also medium).
@@ -104,6 +111,7 @@ function summarizeTool(block) {
     case 'mc_give_common':  return `[gave ${i.target || 'them'} ${i.count} ${i.item}]`;
     case 'mc_give_rare':    return `[gave ${i.target || 'them'} ${i.count} ${i.item} (rare!)]`;
     case 'mc_give_any':     return `[gave ${i.target || 'the Don'} ${i.count} ${i.item}${i.components ? `[${i.components}]` : ''} (owner give)]`;
+    case 'mc_command':      return `[ran /${String(i.command || '').slice(0, 150)}]`;
     case 'mc_query':        return `[queried ${i.target}'s ${i.aspect}]`.replace('[queried', '[looked up');
     default:                return `[did ${n}]`;
   }
@@ -310,6 +318,92 @@ function rcon(cmds) {
     });
     sock.on('error', (e) => { clearTimeout(timer); reject(e); });
   });
+}
+
+// mc_command: the Don's "run anything" tool. These stay off-limits even for him, also
+// after `execute ... run` or `return run`: they take the server down, hand out power,
+// or reload/disable things. Other players' chat sits in Tony's context while he works,
+// so a planted line must not be able to reach them.
+const BLOCKED_COMMANDS = new Set(['stop', 'restart', 'reload', 'rl', 'op', 'deop', 'ban', 'ban-ip',
+  'pardon', 'pardon-ip', 'whitelist', 'datapack', 'save-off', 'transfer', 'geyser', 'floodgate']);
+const MAX_COMMANDS_PER_REQUEST = 8;
+// Tools whose output goes back to Tony for another turn
+const RESULT_TOOLS = new Set(['mc_query', 'mc_command']);
+const MAX_COMMAND_BYTES = 1400; // RCON takes ~1446
+// Minecraft prints nothing when a command fails inside `execute as/at`, so say so
+const EMPTY_REPLY = '(no output. Either it ran without printing anything, or it failed inside execute as/at, which hides errors. '
+  + 'Run it without execute to see the error, e.g. data get entity @e[type=wolf,name=Forrest,limit=1] Health)';
+
+function blockedCommand(cmd) {
+  const heads = [cmd, ...cmd.split(/\srun\s+/).slice(1)];
+  for (const h of heads) {
+    const word = h.trim().replace(/^\//, '').split(/\s+/)[0].toLowerCase().replace(/^[a-z0-9_.-]+:/, '');
+    if (BLOCKED_COMMANDS.has(word)) return word;
+  }
+  return null;
+}
+
+// An empty reply from execute ... run hides why, so test the chain read-only: a chain
+// ending in if/unless reports its own condition, and the last as/at selector gets an
+// `if entity` test that reports how many mobs it matched (zero matches print nothing).
+function lastSelectorTest(chain) {
+  const re = /\s(?:as|at)\s+/g;
+  let m, at = -1, start = -1;
+  while ((m = re.exec(chain))) {
+    // `at @s` / `as @s` re-use the previous selector, so test the last real one
+    if (!chain.startsWith('@s', m.index + m[0].length)) { at = m.index; start = m.index + m[0].length; }
+  }
+  if (at < 0) return null;
+  let i = start, depth = 0, quote = null;
+  for (; i < chain.length; i++) {
+    const ch = chain[i];
+    if (quote) { if (ch === quote && chain[i - 1] !== '\\') quote = null; continue; }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '[' || ch === '{') depth++;
+    else if (ch === ']' || ch === '}') depth--;
+    else if (/\s/.test(ch) && depth === 0) break;
+  }
+  return `${chain.slice(0, at)} if entity ${chain.slice(start, i)}`;
+}
+
+async function explainEmpty(cmd) {
+  const m = cmd.match(/^(execute\s.*?)\s+run\s/);
+  if (!m) return '';
+  const tries = [m[1], lastSelectorTest(m[1])].filter(Boolean);
+  try {
+    for (const t of tries) {
+      const [r] = await rcon([t]);
+      if (!/^Test (passed|failed)/.test(r || '')) continue;
+      return /^Test failed/.test(r)
+        ? ` Checked: "${t}" -> Test failed, so the part after run never ran (no match, condition false, or the area isn't loaded).`
+        : ` Checked: "${t}" -> ${r}, so the part after run did run, and failed or printed nothing.`;
+    }
+  } catch { /* the explanation is best-effort */ }
+  return '';
+}
+
+async function runCommand(command, caller) {
+  if (caller !== OWNER) {
+    log(`REJECTED mc_command by non-owner ${caller}: ${command}`);
+    return 'Refused: mc_command is owner-only.';
+  }
+  const cmd = String(command || '').replace(/[\x00-\x1F]/g, ' ').trim().replace(/^\//, '');
+  if (!cmd) return 'Error: empty command.';
+  if (Buffer.byteLength(cmd) > MAX_COMMAND_BYTES) return `Error: command is over ${MAX_COMMAND_BYTES} bytes.`;
+  const blocked = blockedCommand(cmd);
+  if (blocked) {
+    log(`BLOCKED mc_command /${blocked}: ${cmd}`);
+    return `Blocked: /${blocked} is off-limits for Tony. The Don can run it himself.`;
+  }
+  try {
+    const [reply] = await rcon([cmd]);
+    const out = reply ? reply.slice(0, 3000) : `${EMPTY_REPLY}${await explainEmpty(cmd)}`;
+    log(`cmd ${caller} -> ${cmd} => ${out.slice(0, 300)}`);
+    return out;
+  } catch (err) {
+    log(`cmd ${caller} -> ${cmd} FAILED: ${err.message}`);
+    return `Error: couldn't reach the server (${err.message}).`;
+  }
 }
 
 function tellraw(player, text, color = 'yellow') {
@@ -642,7 +736,7 @@ async function executeTool(name, input, caller, requestNow) {
   }
 }
 
-async function callClaude(messages) {
+async function callClaude(messages, isOwner = false) {
   return client.messages.create({
     model: MODEL,
     // Thinking tokens count toward max_tokens on Haiku 5.5, so leave room beyond the reply.
@@ -650,7 +744,7 @@ async function callClaude(messages) {
     thinking: { type: 'adaptive' },
     output_config: { effort: EFFORT },
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-    tools: TOOLS,
+    tools: isOwner ? OWNER_TOOLS : TOOLS,
     // 'auto', not 'any': a forced tool_choice makes Haiku 5.5 skip thinking and jump
     // straight to mc_say, so it never stops to web_search. Replies still have to go
     // through mc_say; a text-only answer gets one nudge in handleRequest.
@@ -663,12 +757,12 @@ async function callClaude(messages) {
 // The turn continues when the paused assistant content is sent back unchanged. Returns
 // the final response with .content holding the whole assistant turn, so callers can
 // append it as one message.
-async function resumeIfPaused(messages, response) {
+async function resumeIfPaused(messages, response, isOwner = false) {
   let turn = [];
   for (let i = 0; i < 3 && response.stop_reason === 'pause_turn'; i++) {
     turn = turn.concat(response.content);
     messages.push({ role: 'assistant', content: turn });
-    response = await callClaude(messages);
+    response = await callClaude(messages, isOwner);
     messages.pop();
   }
   return turn.length ? { ...response, content: turn.concat(response.content) } : response;
@@ -723,7 +817,7 @@ ${cleaned}
 
   let response;
   try {
-    response = await resumeIfPaused(messages, await callClaude(messages));
+    response = await resumeIfPaused(messages, await callClaude(messages, isOwner), isOwner);
   } catch (err) {
     log('API error:', err.status || '', err.message || err);
     await sayPublic(caller, `i don't feel like talking to you right now. ${formatApiError(err)}`, 'gray');
@@ -735,35 +829,43 @@ ${cleaned}
   log(`req ${caller}${isOwner ? '(owner)' : ''} in=${usage.input_tokens} cached_r=${usage.cache_read_input_tokens || 0} cached_w=${usage.cache_creation_input_tokens || 0} out=${usage.output_tokens} searches=${searches} hist=${prior.length} model=${response.model}`);
   if (await refused(caller, response)) return;
 
-  // If Claude called mc_query, execute it, send tool_results back, and let Claude respond properly
-  const firstTurnTools = response.content.filter((b) => b.type === 'tool_use');
-  const queries = firstTurnTools.filter((b) => b.name === 'mc_query');
-  if (queries.length > 0) {
+  // mc_query and mc_command hand their results back to Tony, so he gets another turn to
+  // read them (and for commands, to fix an error and retry). Other tools in those turns
+  // run right away so a "lemme check" mc_say lands first. Non-owners get one such turn.
+  const loopBlocks = [];
+  let commandsRun = 0;
+  const maxTurns = isOwner ? MAX_COMMANDS_PER_REQUEST + 1 : 1;
+  for (let turn = 1; turn <= maxTurns; turn++) {
+    const toolUses = response.content.filter((b) => b.type === 'tool_use');
+    if (!toolUses.some((b) => RESULT_TOOLS.has(b.name))) break;
     const toolResults = [];
-    // Execute non-query tools from first turn (so a "let me check" mc_say lands immediately)
-    for (const tu of firstTurnTools) {
-      if (tu.name === 'mc_query') continue;
-      log(`tool ${caller} -> ${tu.name} ${JSON.stringify(tu.input || {})} [1st turn]`);
-      await executeTool(tu.name, tu.input || {}, caller, now);
-      toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: 'done' });
+    for (const tu of toolUses) {
+      let result = 'done';
+      if (tu.name === 'mc_query') {
+        log(`query ${caller} -> ${JSON.stringify(tu.input || {})}`);
+        result = await runQuery(tu.input?.target, tu.input?.aspect);
+      } else if (tu.name === 'mc_command') {
+        result = ++commandsRun > MAX_COMMANDS_PER_REQUEST
+          ? `Limit reached: max ${MAX_COMMANDS_PER_REQUEST} commands per request. Tell the Don what you found so far.`
+          : await runCommand(tu.input?.command, caller);
+      } else {
+        log(`tool ${caller} -> ${tu.name} ${JSON.stringify(tu.input || {})} [turn ${turn}]`);
+        await executeTool(tu.name, tu.input || {}, caller, now);
+      }
+      toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
     }
-    // Execute each query and collect its result
-    for (const q of queries) {
-      log(`query ${caller} -> ${JSON.stringify(q.input || {})}`);
-      const result = await runQuery(q.input?.target, q.input?.aspect);
-      toolResults.push({ type: 'tool_result', tool_use_id: q.id, content: result });
-    }
+    loopBlocks.push(...toolUses);
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user', content: toolResults });
     try {
-      response = await resumeIfPaused(messages, await callClaude(messages));
+      response = await resumeIfPaused(messages, await callClaude(messages, isOwner), isOwner);
     } catch (err) {
-      log('API error (2nd turn):', err.status || '', err.message || err);
+      log(`API error (turn ${turn + 1}):`, err.status || '', err.message || err);
       await sayPublic(caller, `i looked but now i don't feel like telling you. ${formatApiError(err)}`, 'gray');
       return;
     }
     usage = response.usage || {};
-    log(`req ${caller} (2nd turn) in=${usage.input_tokens} out=${usage.output_tokens} searches=${usage.server_tool_use?.web_search_requests || 0}`);
+    log(`req ${caller} (turn ${turn + 1}) in=${usage.input_tokens} cached_r=${usage.cache_read_input_tokens || 0} cached_w=${usage.cache_creation_input_tokens || 0} out=${usage.output_tokens} searches=${usage.server_tool_use?.web_search_requests || 0}`);
     if (await refused(caller, response)) return;
   }
 
@@ -781,7 +883,7 @@ ${cleaned}
         : 'Players only see what you send with mc_say. Call mc_say with your reply to the player.',
     });
     try {
-      response = await resumeIfPaused(messages, await callClaude(messages));
+      response = await resumeIfPaused(messages, await callClaude(messages, isOwner), isOwner);
     } catch (err) {
       log('API error (mc_say followup):', err.status || '', err.message || err);
       await sayPublic(caller, `did the research, forgot what i was gonna say. ${formatApiError(err)}`, 'gray');
@@ -800,7 +902,10 @@ ${cleaned}
   }
   let anyActionExecuted = false;
   for (const b of toolBlocks) {
-    if (b.name === 'mc_query') continue;
+    if (RESULT_TOOLS.has(b.name)) {
+      log(`skipped ${b.name} past the turn limit: ${JSON.stringify(b.input || {})}`);
+      continue;
+    }
     log(`tool ${caller} -> ${b.name} ${JSON.stringify(b.input || {})}`);
     await executeTool(b.name, b.input || {}, caller, now);
     if (b.name !== 'mc_say') anyActionExecuted = true;
@@ -810,7 +915,7 @@ ${cleaned}
   if (anyActionExecuted && !isOwner) {
     lastTool.set(caller, now);
   }
-  recordExchange(caller, cleaned, response.content);
+  recordExchange(caller, cleaned, [...loopBlocks, ...response.content]);
 }
 
 function handleLine(line) {
