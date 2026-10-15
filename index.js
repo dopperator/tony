@@ -54,6 +54,8 @@ const lastTool = new Map();
 const hourly = new Map();
 const history = new Map();
 const MAX_HISTORY = 20;
+// Older exchanges are dropped so yesterday's "take me home" doesn't read as a repeat today.
+const HISTORY_TTL_MS = 6 * 3600 * 1000;
 const globalHistory = [];
 const MAX_GLOBAL = 10;
 const chatTail = [];
@@ -218,7 +220,7 @@ function recordExchange(caller, userText, responseContent) {
   if (!parts.length) return;
   const assistant = parts.join(' ');
   const list = history.get(caller) || [];
-  list.push({ user: userText, assistant });
+  list.push({ t: Date.now(), user: userText, assistant });
   while (list.length > MAX_HISTORY) list.shift();
   history.set(caller, list);
 
@@ -795,11 +797,14 @@ async function handleRequest(caller, message) {
   const onlineList = [...online];
 
   const messages = [];
-  const prior = history.get(caller) || [];
+  const prior = (history.get(caller) || []).filter((ex) => now - ex.t < HISTORY_TTL_MS);
+  history.set(caller, prior);
   for (const ex of prior) {
+    const ageMin = Math.floor((now - ex.t) / 60000);
+    const ago = ageMin < 1 ? 'under a minute' : ageMin < 60 ? `${ageMin}m` : `${Math.floor(ageMin / 60)}h ${ageMin % 60}m`;
     messages.push({
       role: 'user',
-      content: `Earlier "${caller}" said:\n<player_message>\n${ex.user}\n</player_message>`,
+      content: `Earlier (${ago} ago) "${caller}" said:\n<player_message>\n${ex.user}\n</player_message>`,
     });
     messages.push({ role: 'assistant', content: ex.assistant });
   }

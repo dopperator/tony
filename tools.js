@@ -12,7 +12,7 @@ module.exports = [
   },
   {
     name: 'mc_say',
-    description: 'Speak to the player in chat without executing any game action. This is the DEFAULT — use it the vast majority of the time. Rude, sarcastic, snarky, dismissive, mocking. Good for refusals, insults, jokes, and just chatting. Does NOT run any game command.',
+    description: 'Speak to the player in chat without executing any game action. Every response has one. Rude, sarcastic, snarky, mocking: good for answers, jokes, roasts and refusals. Does NOT run any game command, so when you are granting an action, call that action tool as well.',
     input_schema: {
       type: 'object',
       properties: {
@@ -24,7 +24,7 @@ module.exports = [
   },
   {
     name: 'mc_tp',
-    description: 'Teleport one online player to another online player. Only use if the caller gave a genuinely good reason. Both players must be online.',
+    description: 'Teleport one online player to another online player. Both players must be online. A caller moving themselves to someone needs any reason at all; moving someone ELSE needs that person to have asked or agreed (see TOOL POLICY).',
     input_schema: {
       type: 'object',
       properties: {
