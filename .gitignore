@@ -1,0 +1,10 @@
+node_modules/
+
+# Secrets
+.env
+
+# Vanilla data-generator output; regenerate per gamedata/build.js
+datagen-*/
+
+# Compiled plugin
+plugin-source/build/
